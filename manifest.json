@@ -1,0 +1,27 @@
+{
+  "name": "GolfSwing3D",
+  "short_name": "GolfSwing",
+  "description": "3D golf game — swing your phone to hit the ball",
+  "start_url": "/golfswing3d/index.html",
+  "scope": "/golfswing3d/",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0d1f0d",
+  "theme_color": "#1a3a1a",
+  "icons": [
+    {
+      "src": "/golfswing3d/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/golfswing3d/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["games"],
+  "lang": "en"
+}
