@@ -18,7 +18,7 @@
 
   /* HUD */
   #hud{position:fixed;inset:0;z-index:10;pointer-events:none;}
-  #hud-top{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:flex-start;padding:10px 12px;background:linear-gradient(to bottom,rgba(0,0,0,0.55),transparent);}
+  #hud-top{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:flex-start;padding:10px 12px;background:linear-gradient(to bottom,rgba(0,0,0,0.55),transparent);z-index:20;}
   .hud-card{background:var(--hud-bg);border:1px solid rgba(125,255,125,0.2);border-radius:10px;padding:5px 12px;text-align:center;backdrop-filter:blur(8px);}
   .hud-label{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--accent);opacity:0.8;}
   .hud-value{font-family:'Bebas Neue',sans-serif;font-size:26px;line-height:1;color:var(--white);}
@@ -39,15 +39,15 @@
   #cast-toast-close{display:block;margin-top:6px;color:var(--accent);font-size:11px;cursor:pointer;text-align:right;}
 
   /* ── AIM + SWING UI ── */
-  /* swipe zone: transparent overlay covering main screen area for touch aim */
-  #swipe-zone{position:fixed;top:80px;left:0;right:0;bottom:160px;z-index:5;pointer-events:none;}
-  #swipe-zone.active{pointer-events:all;}
+  /* swipe zone: full screen transparent overlay for aim swiping */
+  #swipe-zone{position:fixed;top:0;left:0;right:0;bottom:0;z-index:5;pointer-events:none;touch-action:pan-x;}
+  #swipe-zone.active{pointer-events:all;cursor:ew-resize;}
   /* swipe hint that floats in middle of screen */
   #swipe-hint-overlay{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);font-size:13px;letter-spacing:1px;color:rgba(255,255,255,0.3);text-align:center;pointer-events:none;opacity:0;transition:opacity 0.4s;z-index:6;}
   #swipe-hint-overlay.show{opacity:1;}
 
-  /* bottom aim panel */
-  #aim-panel{position:absolute;bottom:0;left:0;right:0;display:flex;flex-direction:column;align-items:center;gap:8px;padding-bottom:16px;opacity:0;pointer-events:none;transition:opacity 0.3s;}
+  /* bottom aim panel — sits above swipe zone (z-index 6) */
+  #aim-panel{position:fixed;bottom:0;left:0;right:0;display:flex;flex-direction:column;align-items:center;gap:8px;padding-bottom:16px;opacity:0;pointer-events:none;transition:opacity 0.3s;z-index:15;}
   #aim-panel.visible{opacity:1;pointer-events:all;}
 
   /* aim direction bar */
@@ -251,7 +251,6 @@ const Audio=(()=>{
 const AimSys=(()=>{
   let angle=0; // radians: 0=straight, -=left, +=right
   const MAX=Math.PI/2.8; // ~64° max
-  let txStart=null,mouseDown=false,lastMX=0;
 
   function clamp(v){return Math.max(-MAX,Math.min(MAX,v));}
   function label(a){
@@ -268,24 +267,44 @@ const AimSys=(()=>{
     document.getElementById('aim-dot').style.left=(pct*100)+'%';
     document.getElementById('aim-name').textContent=label(angle);
   }
-  function delta(dx){angle=clamp(angle+dx*0.009);updateUI();}
 
   return{
     get angle(){return angle;},
     reset(){angle=0;updateUI();},
     attach(zone){
-      // Touch
-      zone.addEventListener('touchstart',e=>{txStart=e.touches[0].clientX;},{passive:true});
-      zone.addEventListener('touchmove',e=>{
-        if(txStart===null)return;
-        const dx=e.touches[0].clientX-txStart;
+      let txStart=null,txLast=null,active=false;
+
+      // Use document-level touch listeners — more reliable on mobile
+      document.addEventListener('touchstart',e=>{
+        if(!zone.classList.contains('active'))return;
+        // ignore touches on HUD buttons and aim panel
+        const tag=e.target.tagName;
+        const inPanel=e.target.closest('#aim-panel,#hud-top,#wind-display,#cast-toast');
+        if(tag==='BUTTON'||tag==='INPUT'||inPanel)return;
         txStart=e.touches[0].clientX;
-        delta(dx);
+        txLast=txStart;
+        active=true;
       },{passive:true});
-      zone.addEventListener('touchend',()=>{txStart=null;},{passive:true});
-      // Mouse
-      zone.addEventListener('mousedown',e=>{mouseDown=true;lastMX=e.clientX;});
-      window.addEventListener('mousemove',e=>{if(!mouseDown)return;delta(e.clientX-lastMX);lastMX=e.clientX;});
+
+      document.addEventListener('touchmove',e=>{
+        if(!active||txLast===null)return;
+        const dx=e.touches[0].clientX-txLast;
+        txLast=e.touches[0].clientX;
+        // 1px = ~0.010 rad
+        angle=clamp(angle+dx*0.010);
+        updateUI();
+      },{passive:true});
+
+      document.addEventListener('touchend',()=>{active=false;txStart=null;txLast=null;},{passive:true});
+
+      // Mouse fallback (desktop)
+      let mouseDown=false,lastMX=0;
+      zone.addEventListener('mousedown',e=>{mouseDown=true;lastMX=e.clientX;e.preventDefault();});
+      window.addEventListener('mousemove',e=>{
+        if(!mouseDown||!zone.classList.contains('active'))return;
+        const dx=e.clientX-lastMX;lastMX=e.clientX;
+        angle=clamp(angle+dx*0.010);updateUI();
+      });
       window.addEventListener('mouseup',()=>{mouseDown=false;});
     }
   };
@@ -687,9 +706,9 @@ const Game=(()=>{
       scene=new Scene3D($('canvas-container'));
       AimSys.attach($('swipe-zone'));
 
-      // Hide swipe hint after first swipe
-      $('swipe-zone').addEventListener('touchmove',()=>{
-        $('swipe-hint-overlay').style.opacity='0';
+      // Hide swipe hint after first real swipe
+      document.addEventListener('touchmove',()=>{
+        document.getElementById('swipe-hint-overlay').style.opacity='0';
       },{once:true,passive:true});
 
       $('play-btn').addEventListener('click',async()=>{
