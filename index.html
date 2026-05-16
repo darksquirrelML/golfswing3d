@@ -106,6 +106,56 @@
   }
   #mute-btn:active { background: rgba(10,40,10,0.95); }
 
+  /* cast button */
+  #cast-btn {
+    pointer-events: all;
+    background: var(--hud-bg);
+    border: 1px solid rgba(125,255,125,0.2);
+    border-radius: 10px;
+    padding: 6px 12px;
+    color: var(--accent);
+    font-size: 20px;
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+    transition: background 0.2s, border-color 0.2s;
+    line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #cast-btn:active { background: rgba(10,40,10,0.95); }
+  #cast-btn.casting {
+    border-color: rgba(125,255,125,0.7);
+    box-shadow: 0 0 10px rgba(125,255,125,0.3);
+  }
+
+  /* cast toast */
+  #cast-toast {
+    position: absolute;
+    top: 70px;
+    right: 16px;
+    background: var(--hud-bg);
+    border: 1px solid rgba(125,255,125,0.3);
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 12px;
+    color: var(--white);
+    backdrop-filter: blur(8px);
+    max-width: 220px;
+    line-height: 1.5;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s;
+    z-index: 20;
+  }
+  #cast-toast.show { opacity: 1; pointer-events: all; }
+  #cast-toast-close {
+    display: block;
+    margin-top: 8px;
+    color: var(--accent);
+    font-size: 11px;
+    cursor: pointer;
+    text-align: right;
+  }
+
   /* power meter */
   #power-meter {
     position: absolute;
@@ -430,7 +480,16 @@
         <div class="hud-value gold" id="hud-score">E</div>
       </div>
       <button id="mute-btn">🔊</button>
+      <button id="cast-btn" title="Cast to TV">📺</button>
     </div>
+  </div>
+
+  <!-- cast toast -->
+  <div id="cast-toast">
+    <strong>📺 Cast to TV</strong><br>
+    In Chrome: tap ⋮ → <em>Cast tab</em> → pick your TV.<br>
+    Or open <strong>receiver.html</strong> on your TV browser.
+    <span id="cast-toast-close">Got it ✕</span>
   </div>
 
   <!-- aim arrow -->
@@ -1270,6 +1329,47 @@ const Game = (() => {
       el('mute-btn').addEventListener('click', () => {
         Audio.toggle(!Audio.muted);
         el('mute-btn').textContent = Audio.muted ? '🔇' : '🔊';
+      });
+
+      // cast button
+      el('cast-btn').addEventListener('click', () => {
+        const toast = el('cast-toast');
+        const btn   = el('cast-btn');
+        const casting = btn.classList.toggle('casting');
+        toast.classList.toggle('show', casting);
+
+        // Try Presentation API (Android Chrome → Chromecast)
+        if (casting && window.PresentationRequest) {
+          const receiverUrl = new URL('receiver.html', window.location.href).href;
+          const req = new PresentationRequest([receiverUrl]);
+          req.start().then(conn => {
+            btn.textContent = '📡';
+            btn.title = 'Casting to TV — tap to stop';
+            // relay canvas stream to receiver via BroadcastChannel
+            const bc = new BroadcastChannel('golfswing3d-cast');
+            // ping receiver every frame with game state
+            Game._castChannel = bc;
+            Game._castConn = conn;
+            conn.addEventListener('terminate', () => {
+              btn.textContent = '📺';
+              btn.classList.remove('casting');
+              toast.classList.remove('show');
+              bc.close();
+            });
+          }).catch(() => {
+            // Presentation API not available or user cancelled — toast stays visible with manual instructions
+          });
+        } else if (!casting) {
+          // stop casting
+          if (Game._castConn) { try { Game._castConn.terminate(); } catch(_){} }
+          btn.textContent = '📺';
+        }
+      });
+
+      el('cast-toast-close').addEventListener('click', () => {
+        el('cast-toast').classList.remove('show');
+        el('cast-btn').classList.remove('casting');
+        el('cast-btn').textContent = '📺';
       });
 
       // next hole
