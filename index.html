@@ -127,6 +127,62 @@
     box-shadow: 0 0 10px rgba(125,255,125,0.3);
   }
 
+  /* aim controls */
+  #aim-controls {
+    position: absolute;
+    bottom: 110px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+  }
+  #aim-controls.visible { opacity: 1; pointer-events: all; }
+  .aim-btn {
+    background: var(--hud-bg);
+    border: 1px solid rgba(125,255,125,0.3);
+    border-radius: 10px;
+    color: var(--accent);
+    font-size: 18px;
+    padding: 10px 16px;
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+    transition: background 0.1s, transform 0.1s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .aim-btn:active { background: rgba(10,60,10,0.95); transform: scale(0.93); }
+  #aim-center-display {
+    text-align: center;
+    min-width: 100px;
+  }
+  #aim-direction-label {
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    color: var(--accent);
+    text-transform: uppercase;
+    margin-bottom: 5px;
+  }
+  #aim-indicator-track {
+    width: 100px; height: 8px;
+    background: rgba(255,255,255,0.12);
+    border-radius: 4px;
+    position: relative;
+  }
+  #aim-indicator-dot {
+    position: absolute;
+    top: -3px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 14px; height: 14px;
+    background: var(--accent);
+    border-radius: 50%;
+    transition: left 0.15s;
+    box-shadow: 0 0 8px rgba(125,255,125,0.6);
+  }
+
   /* cast toast */
   #cast-toast {
     position: absolute;
@@ -495,6 +551,18 @@
   <!-- aim arrow -->
   <div id="aim-arrow">⛳</div>
 
+  <!-- aim direction controls -->
+  <div id="aim-controls">
+    <button id="aim-left" class="aim-btn">◀◀</button>
+    <div id="aim-center-display">
+      <div id="aim-direction-label">Straight</div>
+      <div id="aim-indicator-track">
+        <div id="aim-indicator-dot"></div>
+      </div>
+    </div>
+    <button id="aim-right" class="aim-btn">▶▶</button>
+  </div>
+
   <!-- power meter -->
   <div id="power-meter">
     <div id="power-label">Power</div>
@@ -631,43 +699,59 @@ const Audio = (() => {
 })();
 
 // ═══════════════════════════════════════════════════════
-//  SWING DETECTOR
+//  SWING DETECTOR  (fixed — much higher threshold)
 // ═══════════════════════════════════════════════════════
 const Swing = (() => {
   let samples = [], listening = false, cooldown = false;
-  let gamma = 0, beta = 0; // device orientation
+  let gamma = 0, beta = 0;
   let onSwing = null;
+  // We track a baseline so normal phone handling doesn't trigger
+  let baseline = 9.8; // gravity
+  let baselineSamples = [];
 
   function onMotion(e) {
     if (!listening || cooldown) return;
-    const a = e.accelerationIncludingGravity || e.acceleration;
+    // Prefer pure acceleration (no gravity) so holding still = ~0
+    const a = e.acceleration || e.accelerationIncludingGravity;
     if (!a) return;
-    const mag = Math.sqrt((a.x||0)**2 + (a.y||0)**2 + (a.z||0)**2);
-    samples.push({ mag, t: Date.now() });
-    // trim old samples (>300ms window)
+
+    let mag;
+    if (e.acceleration && (e.acceleration.x !== null)) {
+      // Pure acceleration without gravity — ideal
+      mag = Math.sqrt((e.acceleration.x||0)**2 + (e.acceleration.y||0)**2 + (e.acceleration.z||0)**2);
+    } else {
+      // accelerationIncludingGravity — subtract ~9.8 baseline
+      mag = Math.sqrt((a.x||0)**2 + (a.y||0)**2 + (a.z||0)**2);
+      mag = Math.max(0, mag - baseline);
+    }
+
     const now = Date.now();
-    samples = samples.filter(s => now - s.t < 300);
-    // detect swing: peak > threshold
+    samples.push({ mag, t: now });
+    samples = samples.filter(s => now - s.t < 400);
+
     const peak = Math.max(...samples.map(s => s.mag));
-    if (peak > 18) fire(peak);
+    // Threshold: 25 for pure accel, detects only real swings not fidgeting
+    if (peak > 25) fire(peak);
   }
 
   function onOrientation(e) {
-    gamma = e.gamma || 0; // left/right tilt -90..90
-    beta  = e.beta  || 0; // fore/aft tilt -180..180
+    gamma = e.gamma || 0;
+    beta  = e.beta  || 0;
   }
 
   function fire(peak) {
     cooldown = true;
     samples = [];
-    const power = Math.min(1, (peak - 18) / 22); // 18-40 range → 0-1
-    const horizontal = Math.max(-1, Math.min(1, gamma / 45)); // -45..45 → -1..1
-    const vertical   = Math.max(0.1, Math.min(0.8, 1 - Math.abs(beta - 45) / 60));
-    if (onSwing) onSwing({ power: Math.max(0.1, power), horizontal, vertical });
-    setTimeout(() => { cooldown = false; }, 1800);
+    // power: 25–55 m/s range → 0–1
+    const power = Math.min(1, Math.max(0.1, (peak - 25) / 30));
+    // horizontal from stored aim angle (set by player tapping left/right)
+    // vertical fixed at good launch angle
+    if (onSwing) onSwing({ power, horizontal: Swing._aimH, vertical: 0.55 });
+    setTimeout(() => { cooldown = false; }, 2500);
   }
 
   return {
+    _aimH: 0, // set externally by aim system
     start(cb) {
       onSwing = cb;
       listening = true;
@@ -679,12 +763,11 @@ const Swing = (() => {
       window.removeEventListener('devicemotion', onMotion);
       window.removeEventListener('deviceorientation', onOrientation);
     },
-    fakeFire(power = 0.7) {
-      // desktop fallback
-      fire(18 + power * 22);
+    fakeFire(power = 0.65) {
+      fire(25 + power * 30);
     },
     get gamma() { return gamma; },
-    get beta() { return beta; }
+    get beta()  { return beta; }
   };
 })();
 
@@ -841,14 +924,20 @@ class GolfScene {
   }
 
   _initBall() {
-    const geo = new THREE.SphereGeometry(0.15, 16, 16);
-    const mat = new THREE.MeshLambertMaterial({ color: 0xfafafa });
+    const geo = new THREE.SphereGeometry(0.25, 16, 16);  // bigger: 0.15 → 0.25
+    const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
     this.ballMesh = new THREE.Mesh(geo, mat);
     this.ballMesh.castShadow = true;
     this.scene.add(this.ballMesh);
+    // bright marker ring so ball is always visible
+    const ringGeo = new THREE.RingGeometry(0.35, 0.55, 16);
+    const ringMat = new THREE.MeshBasicMaterial({ color: 0xffff00, side: THREE.DoubleSide, transparent: true, opacity: 0.7 });
+    this.ballRing = new THREE.Mesh(ringGeo, ringMat);
+    this.ballRing.rotation.x = -Math.PI / 2;
+    this.scene.add(this.ballRing);
     // shadow blob under ball
-    const blobGeo = new THREE.CircleGeometry(0.18, 12);
-    const blobMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.25 });
+    const blobGeo = new THREE.CircleGeometry(0.25, 12);
+    const blobMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3 });
     this.shadowBlob = new THREE.Mesh(blobGeo, blobMat);
     this.shadowBlob.rotation.x = -Math.PI / 2;
     this.scene.add(this.shadowBlob);
@@ -1043,31 +1132,57 @@ class GolfScene {
 
   updateBall(ballPos) {
     this.ballMesh.position.copy(ballPos);
-    // shadow blob on ground
-    const groundY = this.getTerrainY(ballPos.x, ballPos.z) + 0.02;
-    this.shadowBlob.position.set(ballPos.x, groundY, ballPos.z);
+    // ground Y for ring and shadow
+    const groundY = this.getTerrainY(ballPos.x, ballPos.z) + 0.03;
+    // yellow ring stays on ground under ball
+    this.ballRing.position.set(ballPos.x, groundY, ballPos.z);
     const heightAbove = Math.max(0, ballPos.y - groundY);
-    const blobScale = Math.max(0.3, 1 - heightAbove * 0.05);
+    // ring visible only when ball is on/near ground
+    this.ballRing.material.opacity = Math.max(0, 0.7 - heightAbove * 0.15);
+    // shadow blob
+    this.shadowBlob.position.set(ballPos.x, groundY, ballPos.z);
+    const blobScale = Math.max(0.3, 1 - heightAbove * 0.04);
     this.shadowBlob.scale.set(blobScale, blobScale, blobScale);
-    this.shadowBlob.material.opacity = 0.25 * blobScale;
+    this.shadowBlob.material.opacity = 0.3 * blobScale;
   }
 
-  updateCamera(ballPos, inFlight) {
-    if (inFlight) {
-      // follow ball in flight — trail behind
+  updateCamera(ballPos, inFlight, ballVel) {
+    if (inFlight && ballVel) {
+      // Camera trails behind the ball in its direction of travel
+      const speed = ballVel.length();
+      // Offset behind ball based on velocity direction
+      const behindX = ballPos.x - (ballVel.x / (speed + 0.001)) * 8;
+      const behindZ = ballPos.z - (ballVel.z / (speed + 0.001)) * 8;
       const ideal = new THREE.Vector3(
-        ballPos.x - 0,
-        ballPos.y + 4,
-        ballPos.z + 10
+        behindX,
+        Math.max(ballPos.y + 3, 4),
+        behindZ
       );
-      this.camera.position.lerp(ideal, 0.04);
+      this.camera.position.lerp(ideal, 0.06);
+      // Look slightly ahead of ball
+      const lookAt = new THREE.Vector3(
+        ballPos.x + (ballVel.x / (speed + 0.001)) * 4,
+        ballPos.y,
+        ballPos.z + (ballVel.z / (speed + 0.001)) * 4
+      );
+      this.camera.lookAt(lookAt);
     } else {
-      // return to tee-view
+      // Aiming view: camera behind tee, looking toward hole
       const tp = HOLES[this.holeIdx].teePos;
-      const ideal = new THREE.Vector3(tp[0], this.getTerrainY(tp[0], tp[2]) + 6, tp[2] + 12);
-      this.camera.position.lerp(ideal, 0.03);
+      const hp = HOLES[this.holeIdx].holePos;
+      const teeY = this.getTerrainY(tp[0], tp[2]);
+      // Position camera behind and above tee
+      const dirX = hp[0] - tp[0], dirZ = hp[2] - tp[2];
+      const len = Math.sqrt(dirX*dirX + dirZ*dirZ) || 1;
+      const ideal = new THREE.Vector3(
+        tp[0] - (dirX/len) * 10,
+        teeY + 4,
+        tp[2] - (dirZ/len) * 10
+      );
+      this.camera.position.lerp(ideal, 0.05);
+      // Look at ball (on tee) or slightly toward hole
+      this.camera.lookAt(ballPos.x, ballPos.y + 1, ballPos.z);
     }
-    this.camera.lookAt(ballPos.x, ballPos.y, ballPos.z);
 
     // flag wave
     if (this.flag) {
@@ -1141,10 +1256,11 @@ const Game = (() => {
     state = s;
     aimArrow.classList.toggle('visible',  s === 'AIMING');
     powerMeter.classList.toggle('visible', s === 'AIMING');
+    document.getElementById('aim-controls').classList.toggle('visible', s === 'AIMING');
     swingPrompt.style.display = s === 'AIMING' ? '' : 'none';
 
     if (s === 'AIMING') {
-      // animated power bar while aiming (simulate readiness)
+      // animated power bar while aiming
       let t = 0;
       clearInterval(Game._powerInterval);
       Game._powerInterval = setInterval(() => {
@@ -1248,17 +1364,17 @@ const Game = (() => {
         physics.inFlight = false;
         completedHole(true);
       } else if (!physics.inFlight && prevFlight) {
-        // ball stopped
+        // ball stopped — show where it landed, then re-aim
         setTimeout(() => {
           if (state !== 'COMPLETE') setState('AIMING');
-        }, 1200);
+        }, 1800);
       }
     }
 
     if (state === 'AIMING') updateHUD();
 
     scene.updateBall(physics.pos);
-    scene.updateCamera(physics.pos, state === 'FLIGHT');
+    scene.updateCamera(physics.pos, state === 'FLIGHT', physics.vel);
     scene.render();
   }
 
@@ -1321,9 +1437,42 @@ const Game = (() => {
       el('swing-btn').addEventListener('click', () => {
         Audio.init();
         const power = (parseFloat(powerFill.style.width) || 50) / 100;
-        const horizontal = Math.max(-1, Math.min(1, Swing.gamma / 45)) || 0;
         Swing.fakeFire(power);
       });
+
+      // aim left / right buttons
+      let aimAngle = 0; // -1 (full left) to +1 (full right)
+      const AIM_STEP = 0.15;
+      const AIM_LABELS = { '-1':'Hard Left', '-0.5':'Left', '0':'Straight', '0.5':'Right', '1':'Hard Right' };
+      function updateAimUI() {
+        const pct = (aimAngle + 1) / 2; // 0..1
+        el('aim-indicator-dot').style.left = (pct * 100) + '%';
+        // label
+        const rounded = Math.round(aimAngle * 2) / 2; // snap to -1, -0.5, 0, 0.5, 1
+        el('aim-direction-label').textContent = AIM_LABELS[rounded.toFixed(1)] || (aimAngle < 0 ? 'Left' : 'Right');
+        // also rotate the aim arrow emoji
+        aimArrow.style.transform = `translateX(-50%) rotate(${aimAngle * 30}deg)`;
+        // store in Swing for motion-based fire
+        Swing._aimH = aimAngle;
+      }
+      // hold to keep moving
+      let aimInterval = null;
+      function startAim(dir) {
+        aimAngle = Math.max(-1, Math.min(1, aimAngle + dir * AIM_STEP));
+        updateAimUI();
+        aimInterval = setInterval(() => {
+          aimAngle = Math.max(-1, Math.min(1, aimAngle + dir * AIM_STEP));
+          updateAimUI();
+        }, 150);
+      }
+      function stopAim() { clearInterval(aimInterval); }
+      el('aim-left').addEventListener('pointerdown',  () => startAim(-1));
+      el('aim-right').addEventListener('pointerdown', () => startAim(1));
+      el('aim-left').addEventListener('pointerup',    stopAim);
+      el('aim-right').addEventListener('pointerup',   stopAim);
+      el('aim-left').addEventListener('pointerleave', stopAim);
+      el('aim-right').addEventListener('pointerleave',stopAim);
+      updateAimUI();
 
       // mute
       el('mute-btn').addEventListener('click', () => {
